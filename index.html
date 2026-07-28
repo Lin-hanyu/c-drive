@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>C盘危机</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #000;
+            color: #0f0;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 15px;
+            line-height: 1.6;
+            height: 100vh;
+            overflow: hidden;
+            padding: 8px 12px;
+            display: flex;
+            flex-direction: column;
+        }
+        #output {
+            flex: 1;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            padding: 0;
+            outline: none;
+        }
+        #output::-webkit-scrollbar {
+            width: 6px;
+        }
+        #output::-webkit-scrollbar-track {
+            background: #000;
+        }
+        #output::-webkit-scrollbar-thumb {
+            background: #0f0;
+            border-radius: 4px;
+        }
+        .input-line {
+            display: inline;
+        }
+        .input-line .prompt {
+            color: #0f0;
+        }
+        .input-line .input-text {
+            color: #0f0;
+            background: transparent;
+            border: none;
+            outline: none;
+            font-family: inherit;
+            font-size: inherit;
+            caret-color: #0f0;
+        }
+        .cursor-blink {
+            display: inline-block;
+            width: 0.6em;
+            height: 1.2em;
+            background: #0f0;
+            animation: blink 1s step-end infinite;
+            vertical-align: text-bottom;
+            margin-left: 1px;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+        .disk-size {
+            color: #0f0;
+            font-weight: bold;
+        }
+        .disk-size.danger {
+            color: #f44;
+        }
+        .disk-size.warning {
+            color: #ff0;
+        }
+    </style>
+</head>
+<body>
+    <div id="output" tabindex="0"></div>
+
+    <script>
+        // =====================================================================
+        //  纯终端模拟 - C盘危机 (修正胜利条件为 >=)
+        // =====================================================================
+        const output = document.getElementById('output');
+
+        // ---- 工具函数 ----
+        function print(text) {
+            const node = document.createTextNode(text + '\n');
+            output.appendChild(node);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function printRaw(text) {
+            const node = document.createTextNode(text);
+            output.appendChild(node);
+            output.scrollTop = output.scrollHeight;
+        }
+
+        function clearScreen() {
+            output.innerHTML = '';
+            window.diskSpans = [];
+        }
+
+        function sleep(ms) {
+            return new Promise(r => setTimeout(r, ms));
+        }
+
+        function rand(min, max) {
+            return Math.floor(Math.random() * (max - min + 1)) + min;
+        }
+
+        // ---- 核心输入函数（完全在输出区域模拟终端输入） ----
+        function waitInput() {
+            return new Promise((resolve) => {
+                const lineDiv = document.createElement('div');
+                lineDiv.className = 'input-line';
+                const promptSpan = document.createElement('span');
+                promptSpan.className = 'prompt';
+                promptSpan.textContent = '> ';
+                const inputSpan = document.createElement('span');
+                inputSpan.className = 'input-text';
+                const cursorSpan = document.createElement('span');
+                cursorSpan.className = 'cursor-blink';
+                lineDiv.appendChild(promptSpan);
+                lineDiv.appendChild(inputSpan);
+                lineDiv.appendChild(cursorSpan);
+                output.appendChild(lineDiv);
+                output.scrollTop = output.scrollHeight;
+
+                let currentInput = '';
+
+                const keyHandler = (e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        cursorSpan.remove();
+                        document.removeEventListener('keydown', keyHandler);
+                        const textContent = lineDiv.textContent;
+                        const newText = document.createTextNode(textContent + '\n');
+                        lineDiv.replaceWith(newText);
+                        output.scrollTop = output.scrollHeight;
+                        resolve(currentInput);
+                        return;
+                    }
+                    if (e.key === 'Backspace') {
+                        e.preventDefault();
+                        if (currentInput.length > 0) {
+                            currentInput = currentInput.slice(0, -1);
+                            inputSpan.textContent = currentInput;
+                        }
+                        return;
+                    }
+                    if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                        e.preventDefault();
+                        currentInput += e.key;
+                        inputSpan.textContent = currentInput;
+                        output.scrollTop = output.scrollHeight;
+                    }
+                };
+
+                output.focus();
+                document.addEventListener('keydown', keyHandler);
+                const focusHandler = () => output.focus();
+                document.addEventListener('click', focusHandler);
+                window.__inputCleanup = () => {
+                    document.removeEventListener('keydown', keyHandler);
+                    document.removeEventListener('click', focusHandler);
+                };
+            });
+        }
+
+        // 等待任意键
+        function waitAnyKey() {
+            return new Promise((resolve) => {
+                const handler = (e) => {
+                    if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return;
+                    document.removeEventListener('keydown', handler);
+                    document.removeEventListener('click', handler);
+                    resolve();
+                };
+                document.addEventListener('keydown', handler);
+                document.addEventListener('click', handler);
+                output.focus();
+            });
+        }
+
+        // ---- 游戏状态 ----
+        const G = {
+            cun: [],
+            ruan: [],
+            yun: [],
+            bingdu: [],
+            weizhi: [],
+            ruanjian: 1,
+            guanjia: false,
+            qu: 0,
+            xx: 0,
+            chu: 0,
+            bingdu1: false,
+            bingdu2: false,
+            virusIntervals: [],
+            virusRunning: [],
+            bgInterval: null,
+            bgEnabled: false,
+            gameOver: false,
+            sheng: false,
+        };
+
+        // ---- 动态更新磁盘显示 ----
+        window.diskSpans = [];
+
+        function updateDiskDisplay() {
+            if (!window.diskSpans || window.diskSpans.length === 0) return;
+            for (let i = 1; i <= G.qu; i++) {
+                const span = window.diskSpans[i];
+                if (span) {
+                    const size = G.cun[i] || 0;
+                    span.textContent = size;
+                    if (i === G.xx) {
+                        if (size <= 5) span.style.color = '#f44';
+                        else if (size <= 15) span.style.color = '#ff0';
+                        else span.style.color = '#0f0';
+                    } else {
+                        span.style.color = '#0f0';
+                    }
+                }
+            }
+        }
+
+        // ---- 渲染主界面 ----
+        function renderMainScreen() {
+            clearScreen();
+
+            let swStr = '';
+            if (G.guanjia && G.ruanjian === 1) {
+                swStr = '[电脑管家]';
+            } else if (G.guanjia && G.ruanjian > 1) {
+                swStr = '[电脑管家],';
+            }
+            if (G.ruanjian !== 1) {
+                const names = [];
+                for (let i = 1; i < G.ruanjian; i++) {
+                    names.push(G.ruan[i] || '?');
+                }
+                swStr += names.join(',');
+            }
+            print(`安装了的软件:${swStr || '(无)'}`);
+            print(`目标: ${G.chu}GB`);
+            print('');
+
+            for (let i = 1; i <= G.qu; i++) {
+                const size = G.cun[i] || 0;
+                const isC = (i === G.xx);
+                const line = document.createElement('div');
+                line.textContent = `盘[ ${i} ] `;
+                const span = document.createElement('span');
+                span.className = 'disk-size';
+                span.textContent = size;
+                if (isC && size <= 5) span.style.color = '#f44';
+                else if (isC && size <= 15) span.style.color = '#ff0';
+                else span.style.color = '#0f0';
+                line.appendChild(span);
+                const suffix = document.createTextNode(`GB${isC ? '--C盘' : ''}`);
+                line.appendChild(suffix);
+                output.appendChild(line);
+                if (!window.diskSpans) window.diskSpans = [];
+                window.diskSpans[i] = span;
+            }
+            output.scrollTop = output.scrollHeight;
+
+            print('');
+            print('|1安装软件|2操作软件(获得奖励)|3卸载软件|4上网|5下载电脑管家|6使用电脑管家杀毒|7使用电脑管家深度清洁|');
+            print('|8重装系统|9把电脑砸了|10查看故事背景(首次游玩必看)|11刷新');
+            print('');
+        }
+
+        // ---- 病毒系统 ----
+        function startVirus(interval, minAdd, maxAdd) {
+            const id = G.virusIntervals.length;
+            G.virusRunning.push(true);
+            const timer = setInterval(() => {
+                if (!G.virusRunning[id] || G.cun[G.xx] <= 0 || G.gameOver) return;
+                const add = rand(minAdd, maxAdd);
+                if (G.cun[G.xx] > 0) {
+                    G.cun[G.xx] = Math.max(0, G.cun[G.xx] - add);
+                    updateDiskDisplay();
+                    if (G.cun[G.xx] <= 0) {
+                        G.gameOver = true;
+                        print('⚠️ C盘已满，系统崩溃！');
+                        stopAllViruses();
+                    }
+                }
+            }, interval * 1000);
+            G.virusIntervals.push(timer);
+            return id;
+        }
+
+        function stopAllViruses() {
+            for (let t of G.virusIntervals) clearInterval(t);
+            G.virusIntervals = [];
+            G.virusRunning = [];
+            if (G.bgInterval) {
+                clearInterval(G.bgInterval);
+                G.bgInterval = null;
+                G.bgEnabled = false;
+            }
+        }
+
+        function startBackground(interval = 5, minAdd = 1, maxAdd = 3) {
+            if (G.bgEnabled) return;
+            G.bgEnabled = true;
+            G.bgInterval = setInterval(() => {
+                if (!G.bgEnabled || G.cun[G.xx] <= 0 || G.gameOver) return;
+                const add = rand(minAdd, maxAdd);
+                if (G.cun[G.xx] > 0) {
+                    G.cun[G.xx] = Math.max(0, G.cun[G.xx] - add);
+                    updateDiskDisplay();
+                    if (G.cun[G.xx] <= 0) {
+                        G.gameOver = true;
+                        print('⚠️ C盘已满，系统崩溃！');
+                        stopAllViruses();
+                    }
+                }
+            }, interval * 1000);
+        }
+
+        // ---- 慢速打印 ----
+        async function printSlow(text, delay = 30) {
+            for (let ch of text) {
+                printRaw(ch);
+                await sleep(delay);
+            }
+            printRaw('\n');
+        }
+
+        // ---- 开场 ----
+        async function startGame() {
+            clearScreen();
+            const s1 = '一天你像往常一样打开电脑';
+            await sleep(500);
+            print('-------------------按任意键开始-------------林翰宇出品-------建议先把游戏窗口放在合适的位置再开始-----');
+            await waitAnyKey();
+            clearScreen();
+            await printSlow('       ' + s1, 12);
+            print('');
+            print('------------点击屏幕继续--------------');
+            await waitAnyKey();
+            clearScreen();
+            const s2 = '你的   C盘   爆了！！！！！！！！！！！';
+            await printSlow(s2, 12);
+            print('');
+            print('------------点击屏幕继续--------------');
+            await waitAnyKey();
+            clearScreen();
+            print('现在把你传送回买电脑之前');
+            await sleep(2000);
+            clearScreen();
+        }
+
+        // ---- 安装系统 ----
+        async function installSystem() {
+            clearScreen();
+            await printSlow('请按照提示输入指令来完成系统安装');
+            print('1极简安装|2沉浸式安装');
+            let choice = 0;
+            while (true) {
+                const input = await waitInput();
+                const num = parseInt(input);
+                if (num === 1 || num === 2) { choice = num; break; }
+                print('错误');
+            }
+            if (choice === 1) {
+                await quickInstall();
+            } else {
+                await immersiveInstall();
+            }
+        }
+
+        async function quickInstall() {
+            clearScreen();
+            await printSlow('=== 磁盘分区 ===');
+            print('磁盘 0: 未分配空间 128GB');
+            print('  [  ] 未分配');
+            print('');
+            print('> 分区数量 (>=1&&<=128): ');
+            let q = parseInt(await waitInput());
+            while (q < 1 || q > 128) {
+                print('请输入1~128之间的数字');
+                q = parseInt(await waitInput());
+            }
+            G.qu = q;
+            G.cun = new Array(129).fill(0);
+            print('');
+            print('>分区空间');
+            for (let i = 1; i <= q; i++) {
+                while (true) {
+                    print(`> [${i}] >`);
+                    let x = parseInt(await waitInput());
+                    let total = x;
+                    for (let j = 1; j <= i; j++) total += G.cun[j];
+                    if (total > 128) {
+                        print('>空间超限，请重新规划!');
+                    } else {
+                        G.cun[i] = x;
+                        print('>分配正确！');
+                        break;
+                    }
+                }
+            }
+            print('');
+            while (true) {
+                print('>C盘(系统 需30GB)为分区:');
+                let x = parseInt(await waitInput());
+                if (x > G.qu || x < 1) {
+                    print('>此磁盘不存在');
+                } else if (G.cun[x] <= 30) {
+                    print(`>盘${x}空间不足，仅${G.cun[x]}GB,需>30GB`);
+                } else {
+                    print('>满足C盘(系统)分区条件');
+                    G.chu = G.cun[x];      // 记录原始大小
+                    G.cun[x] -= 30;
+                    G.xx = x;
+                    break;
+                }
+            }
+            print('');
+            await printSlow('正在格式化分区...');
+            await sleep(1000);
+            await printSlow('正在创建系统分区...');
+            await sleep(1000);
+            clearScreen();
+        }
+
+        async function immersiveInstall() {
+            clearScreen();
+            await printSlow('[BIOS] 正在执行开机自检...');
+            await printSlow('[BIOS] 检测到 CPU: Intel Core i9-13900K');
+            await printSlow('[BIOS] 检测到 内存: 32GB DDR5');
+            await printSlow('[BIOS] 检测到 硬盘: 128GB NVMe SSD');
+            print('');
+            print('>>> 按 Enter 继续...');
+            await waitAnyKey();
+            clearScreen();
+
+            await printSlow('\n[BIOS] 已进入 BIOS 设置界面');
+            await printSlow('[BIOS] 检测到启动设备: UEFI: USB Flash Drive');
+            await printSlow('[BIOS] 设置启动顺序: USB > SSD > HDD');
+            await printSlow('[BIOS] 保存设置并重启...');
+            await sleep(3000);
+            clearScreen();
+
+            await printSlow('正在从 UEFI: USB Flash Drive 启动...');
+            await printSlow('Press any key to boot from USB...');
+            print('');
+            print('> 按任意键继续: ');
+            await waitAnyKey();
+            await printSlow('\n正在加载 Windows 安装程序...');
+            await sleep(3500);
+            clearScreen();
+
+            await printSlow('=== Windows 安装程序 ===');
+            await printSlow('选择要安装的语言: ');
+            await printSlow('1. 中文（简体）');
+            await printSlow('2. English');
+            print('');
+            print('> 请输入数字选择语言 (1/2): ');
+            let lang = parseInt(await waitInput());
+            if (lang === 1) await printSlow('已选择: 中文（简体）');
+            else await printSlow('已选择: English');
+            print('');
+            print('>>> 按 Enter 继续...');
+            await waitAnyKey();
+            clearScreen();
+
+            await printSlow('=== 安装类型 ===');
+            await printSlow('1. 升级：保留文件和应用');
+            await printSlow('2. 自定义：仅安装 Windows（全新安装）');
+            print('');
+            print('> 请输入数字选择 (1/2): ');
+            let instType = parseInt(await waitInput());
+            if (instType === 2) await printSlow('已选择: 自定义安装');
+            else await printSlow('已选择: 升级安装');
+            await sleep(500);
+            clearScreen();
+
+            await printSlow('=== 磁盘分区 ===');
+            print('磁盘 0: 未分配空间 128GB');
+            print('  [  ] 未分配');
+            print('');
+            print('> 分区数量 (>=1&&<=128): ');
+            let q = parseInt(await waitInput());
+            while (q < 1 || q > 128) {
+                print('请输入1~128之间的数字');
+                q = parseInt(await waitInput());
+            }
+            G.qu = q;
+            G.cun = new Array(129).fill(0);
+            print('');
+            print('>分区空间');
+            for (let i = 1; i <= q; i++) {
+                while (true) {
+                    print(`> [${i}] >`);
+                    let x = parseInt(await waitInput());
+                    let total = x;
+                    for (let j = 1; j <= i; j++) total += G.cun[j];
+                    if (total > 128) {
+                        print('>空间超限，请重新规划!');
+                    } else {
+                        G.cun[i] = x;
+                        print('>分配正确！');
+                        break;
+                    }
+                }
+            }
+            print('');
+            while (true) {
+                print('>C盘(系统 需30GB)为分区:');
+                let x = parseInt(await waitInput());
+                if (x > G.qu || x < 1) {
+                    print('>此磁盘不存在');
+                } else if (G.cun[x] <= 30) {
+                    print(`>盘${x}空间不足，仅${G.cun[x]}GB,需>30GB`);
+                } else {
+                    print('>满足C盘(系统)分区条件');
+                    G.chu = G.cun[x];
+                    G.cun[x] -= 30;
+                    G.xx = x;
+                    break;
+                }
+            }
+            print('');
+            await printSlow('正在格式化分区...');
+            await sleep(1000);
+            await printSlow('正在创建系统分区...');
+            await sleep(1000);
+            clearScreen();
+
+            await printSlow('=== 正在安装 Windows ===');
+            print('正在复制文件... [■■■■■■■■■■] 25%');
+            await sleep(800);
+            print('正在展开文件... [■■■■■■■■■■■■■■] 50%');
+            await sleep(800);
+            print('正在安装功能... [■■■■■■■■■■■■■■■■■■] 75%');
+            await sleep(800);
+            print('正在安装更新... [■■■■■■■■■■■■■■■■■■■■■■■■] 100%');
+            await sleep(1000);
+            clearScreen();
+
+            await printSlow('=== 准备就绪 ===');
+            await printSlow('计算机将在 10 秒后自动重启...');
+            for (let i = 10; i > 0; i--) {
+                print(`\r倒计时: ${i} 秒`);
+                await sleep(1000);
+            }
+            print('');
+            clearScreen();
+
+            await printSlow('=== 欢迎使用 Windows ===');
+            await printSlow('正在准备设备...');
+            await sleep(1000);
+            await printSlow('正在应用设置...');
+            await sleep(1000);
+            print('');
+            await printSlow(' 恭喜！系统安装完成！');
+            await printSlow('请输入用户名: ');
+            const uname = await waitInput();
+            await printSlow(`用户 ${uname} 已创建！`);
+            await printSlow('\n正在进入系统...');
+            await sleep(1500);
+            clearScreen();
+        }
+
+        // ---- 主菜单循环 ----
+        async function mainLoop() {
+            G.gameOver = false;
+            G.sheng = false;
+            while (G.cun[G.xx] > 0 && !G.gameOver && !G.sheng) {
+                // 胜利条件：恢复到初始大小（>=）
+                if (G.cun[G.xx] >= G.chu) {
+                    G.sheng = true;
+                    break;
+                }
+                renderMainScreen();
+                const input = await waitInput();
+                const cmd = parseInt(input);
+                await handleCommand(cmd);
+                if (G.gameOver) break;
+                // 再次检查
+                if (G.cun[G.xx] >= G.chu) {
+                    G.sheng = true;
+                    break;
+                }
+            }
+            if (G.sheng) {
+                stopAllViruses();
+                await victoryEnding();
+            } else if (G.gameOver || G.cun[G.xx] <= 0) {
+                stopAllViruses();
+                print('游戏结束，你的电脑报废了');
+                print('按任意键退出...');
+                await waitAnyKey();
+            }
+        }
+
+        // ---- 胜利结局 ----
+        async function victoryEnding() {
+            clearScreen();
+            print('干得好!这位来自神秘组织的神秘人员,老大我亲自来到你这里别忘了目的');
+            print('=====是否把重要文件交给老大(yes/no)====');
+            const answer1 = await waitInput();
+            if (answer1 === 'yes') {
+                await printSlow('不愧是我的神秘人员,我赐予你整整100000亿元!!!!!!收下吧');
+                print('====要不要谢谢老大(yes/no)====');
+                const answer2 = await waitInput();
+                if (answer2 === 'yes') {
+                    await printSlow('好样的,有礼貌,我们后会有期');
+                } else if (answer2 === 'no') {
+                    await printSlow('这点礼貌都没有,奖金别想要了');
+                } else {
+                    await printSlow('你这种沉默我喜欢!多奖励你9999亿元');
+                }
+            } else if (answer1 === 'no') {
+                await printSlow('早知道招聘神秘人员的时候不招你了!没有的废物!!');
+            } else {
+                print('你是不是输错了');
+                await sleep(2000);
+                await printSlow('伙计,看来你对此事心不在焉啊,这奖金就不给你了,你也被正式退出神秘组织');
+                await sleep(200);
+                await printSlow('再见吧!');
+                await waitAnyKey();
+                return;
+            }
+            await printSlow('再见吧!');
+            await waitAnyKey();
+        }
+
+        // ---- 命令处理 ----
+        async function handleCommand(cmd) {
+            switch (cmd) {
+                case 1: await installSoftware(); break;
+                case 2: await operateSoftware(); break;
+                case 3: await uninstallSoftware(); break;
+                case 4: await surfInternet(); break;
+                case 5: await downloadManager(); break;
+                case 6: await antivirus(); break;
+                case 7: await deepClean(); break;
+                case 8: await reinstallSystem(); break;
+                case 9: G.gameOver = true; print('你砸了电脑！'); break;
+                case 10: await storyBackground(); break;
+                case 11: renderMainScreen(); break;
+                default: clearScreen(); print('未知命令'); break;
+            }
+            if (G.cun[G.xx] <= 0 && !G.gameOver && !G.sheng) {
+                G.gameOver = true;
+                print('⚠️ C盘已满，系统崩溃！');
+                stopAllViruses();
+            }
+        }
+
+        // ---- 故事背景 ----
+        async function storyBackground() {
+            clearScreen();
+            print('你是个神秘组织的神秘人员,重要文件就在这台电脑中.');
+            print('你随意将这台电脑放置在家中,把它当作自己的电脑使用.');
+            print('可是,好景不长,C盘被未知的原因爆满,好在重要文件未丢失,于是你重装系统.');
+            print('这次系统提示要是C盘再次爆满,重要文件将会被永久销毁.');
+            print('你的任务是保护电脑的C盘不被占满,开始行动吧！神秘组织中的神秘人员,游戏中可能会有彩蛋哦');
+            print('注意!当电脑的C盘大小到达最大后神秘组织的老板会亲自来你家索要重要文件,还会奖励你人名币哦!');
+            print('----按任意键继续----');
+            await waitAnyKey();
+            clearScreen();
+        }
+
+        // ---- 以下函数与原C++逻辑一致（略作精简，保留完整功能） ----
+
+        async function installSoftware() {
+            clearScreen();
+            let swStr = '';
+            if (G.ruanjian !== 1) {
+                const names = [];
+                for (let i = 1; i < G.ruanjian; i++) names.push(G.ruan[i] || '?');
+                swStr = names.join(',');
+            }
+            print(`安装了的软件:${swStr || '(无)'}`);
+            print('');
+            let name = '', exit = false;
+            while (true) {
+                print('软件的名称|6666返回|>');
+                name = await waitInput();
+                if (name === '6666') { exit = true; break; }
+                let dup = false;
+                for (let i = 1; i < G.ruanjian; i++) { if (G.ruan[i] === name) { dup = true; break; } }
+                if (!dup) break;
+                print('软件名重复!');
+            }
+            if (exit) { clearScreen(); return; }
+            const need = rand(3, 10);
+            let hasSpace = false;
+            for (let i = 1; i <= G.qu; i++) { if (G.cun[i] > need) { hasSpace = true; break; } }
+            if (!hasSpace) { print('无法安装'); await sleep(3000); clearScreen(); return; }
+            print('');
+            print(`你要把${name}安装在哪里？  所需空间${need}GB`);
+            print('');
+            for (let i = 1; i <= G.qu; i++) {
+                if (i === G.xx) print(`盘[ ${i} ] ${G.cun[i]}GB--C盘`);
+                else print(`盘[ ${i} ] ${G.cun[i]}GB`);
+            }
+            print('');
+            while (true) {
+                const ta = parseInt(await waitInput());
+                if (ta > G.qu || ta < 1) { print('不存在此磁盘!'); continue; }
+                if (G.cun[ta] < need) { print('磁盘空间不足！'); continue; }
+                print('安装中...');
+                await sleep(2000);
+                print('安装成功！');
+                const idx = G.ruanjian;
+                G.ruan[idx] = name;
+                G.yun[idx] = false;
+                G.bingdu[idx] = false;
+                G.weizhi[idx] = ta;
+                G.cun[ta] -= need;
+                const extra = rand(2, need);
+                G.cun[G.xx] = Math.max(0, G.cun[G.xx] - extra);
+                G.ruanjian++;
+                await sleep(2000);
+                clearScreen();
+                return;
+            }
+        }
+
+        async function operateSoftware() {
+            clearScreen();
+            if (G.ruanjian === 1) { print('暂无软件，请安装'); await sleep(3000); clearScreen(); return; }
+            print('选择操作的软件|6666返回');
+            for (let i = 1; i < G.ruanjian; i++) print(` [ ${i} ] ${G.ruan[i]}`);
+            let idx = 0, exit = false;
+            while (true) {
+                const val = await waitInput();
+                const num = parseInt(val);
+                if (val === '6666') { exit = true; break; }
+                if (num >= G.ruanjian || num < 1) print('软件不存在');
+                else { idx = num; break; }
+            }
+            if (exit) { clearScreen(); return; }
+            const r = rand(1, 2);
+            if (r === 1) {
+                clearScreen();
+                print('糟糕，这是病毒软件，你的电脑中毒了！');
+                G.bingdu[idx] = true;
+                G.yun[idx] = true;
+                await sleep(2000);
+                const fan = rand(1, 10);
+                print(`病毒开始疯狂繁殖,占用了C盘${fan}GB空间，接下来的每5秒增加2-5GB，建议立刻下载杀毒软件!`);
+                G.cun[G.xx] = Math.max(0, G.cun[G.xx] - fan);
+                startVirus(5, 2, 5);
+                print('按任意键继续');
+                await waitAnyKey();
+                clearScreen();
+            } else {
+                print('操作成功,C盘奖励增加5GB！');
+                G.cun[G.xx] += 5;
+                G.yun[idx] = true;
+                await sleep(2000);
+                clearScreen();
+            }
+        }
+
+        async function uninstallSoftware() {
+            clearScreen();
+            if (G.ruanjian === 1) { print('没有安装软件'); print('按任意键继续'); await waitAnyKey(); clearScreen(); return; }
+            print('安装了的软件:');
+            for (let i = 1; i < G.ruanjian; i++) print(` [ ${i} ] ${G.ruan[i]}`);
+            print('');
+            print('你要卸载哪个软件:  |6666返回');
+            let idx = 0, exit = false;
+            while (true) {
+                const val = await waitInput();
+                const num = parseInt(val);
+                if (val === '6666') { exit = true; break; }
+                if (num >= G.ruanjian || num < 1) print('软件不存在!');
+                else { idx = num; break; }
+            }
+            if (exit) { clearScreen(); return; }
+            if (G.bingdu[idx]) { print('病毒软件无法卸载'); print('按任意键继续'); await waitAnyKey(); clearScreen(); return; }
+            if (G.yun[idx]) {
+                print('此软件正在运行，是否终止|1yes|2no|');
+                let yn = 0;
+                while (true) {
+                    const v = parseInt(await waitInput());
+                    if (v === 1 || v === 2) { yn = v; break; }
+                    print('错误');
+                }
+                if (yn === 1) {
+                    print('终止中...'); await sleep(900); print('完成');
+                    print('卸载中...'); await sleep(1000);
+                    const freed = rand(1, 10);
+                    print(`完成！释放${freed}GB空间`);
+                    G.cun[G.weizhi[idx]] += freed;
+                    for (let i = idx; i < G.ruanjian - 1; i++) {
+                        G.ruan[i] = G.ruan[i + 1];
+                        G.yun[i] = G.yun[i + 1];
+                        G.bingdu[i] = G.bingdu[i + 1];
+                        G.weizhi[i] = G.weizhi[i + 1];
+                    }
+                    G.ruanjian--;
+                    print('按任意键继续');
+                    await waitAnyKey();
+                } else {
+                    print('无法卸载');
+                    print('按任意键继续');
+                    await waitAnyKey();
+                }
+            } else {
+                print('卸载中...');
+                await sleep(1000);
+                const freed = rand(1, 10);
+                print(`完成！释放${freed}GB空间`);
+                G.cun[G.weizhi[idx]] += freed;
+                for (let i = idx; i < G.ruanjian - 1; i++) {
+                    G.ruan[i] = G.ruan[i + 1];
+                    G.yun[i] = G.yun[i + 1];
+                    G.bingdu[i] = G.bingdu[i + 1];
+                    G.weizhi[i] = G.weizhi[i + 1];
+                }
+                G.ruanjian--;
+                print('按任意键继续');
+                await waitAnyKey();
+            }
+            clearScreen();
+        }
+
+        async function surfInternet() {
+            clearScreen();
+            print('开始上网|6666返回');
+            print('输入网址:');
+            const url = await waitInput();
+            if (url === '6666') { clearScreen(); return; }
+            const r = rand(1, 2);
+            if (r === 1) {
+                print('此乃好网站,C盘增加4GB');
+                G.cun[G.xx] += 4;
+            } else {
+                print('此乃垃圾网址,C盘减少3GB');
+                G.cun[G.xx] = Math.max(0, G.cun[G.xx] - 3);
+                if (rand(1, 3) === 1) {
+                    print('这个网站太恶意，中毒了');
+                    startVirus(5, 2, 5);
+                    G.bingdu2 = true;
+                }
+            }
+            print('按任意键继续');
+            await waitAnyKey();
+            clearScreen();
+        }
+
+        async function downloadManager() {
+            clearScreen();
+            if (G.cun[G.xx] < 5) { print('无法下载,C盘需5GB'); print('按任意键继续'); await waitAnyKey(); clearScreen(); return; }
+            if (G.guanjia) { print('已下载'); print('按任意键继续'); await waitAnyKey(); clearScreen(); return; }
+            print('是否下载|1yes|2no');
+            let t = 0;
+            while (true) {
+                const v = parseInt(await waitInput());
+                if (v === 1 || v === 2) { t = v; break; }
+                print('错误');
+            }
+            if (t === 2) { clearScreen(); return; }
+            print('下载中...(C盘5GB)');
+            await sleep(1000);
+            print('完成');
+            G.cun[G.xx] -= 5;
+            G.guanjia = true;
+            await sleep(100);
+            print('按任意键继续');
+            await waitAnyKey();
+            clearScreen();
+        }
+
+        async function antivirus() {
+            clearScreen();
+            if (!G.guanjia) { print('未下载电脑管家'); print('按任意键继续'); await waitAnyKey(); clearScreen(); return; }
+            print('查找病毒中...');
+            let found = false;
+            for (let i = 1; i < G.ruanjian; i++) { if (G.bingdu[i]) { print(`找到风险[${G.ruan[i]}]`); found = true; } }
+            if (G.bingdu1 || G.bingdu2) found = true;
+            if (found) {
+                print('');
+                print('找到风险');
+                await sleep(1000);
+                const d = rand(1, 3);
+                if (d === 1) {
+                    print('成功消灭病毒');
+                    for (let i = 1; i < G.ruanjian; i++) {
+                        if (G.bingdu[i]) { G.bingdu[i] = false;
+                            G.yun[i] = false; }
+                    }
+                    G.bingdu1 = false;
+                    G.bingdu2 = false;
+                    stopAllViruses();
+                    print('按任意键继续');
+                    await waitAnyKey();
+                } else {
+                    print('无法消灭');
+                    print('按任意键继续');
+                    await waitAnyKey();
+                }
+            } else {
+                print('您的电脑目前安全!');
+                print('按任意键按继续');
+                await waitAnyKey();
+            }
+            clearScreen();
+        }
+
+        async function deepClean() {
+            clearScreen();
+            if (!G.guanjia) { print('未下载电脑管家'); print('按任意键继续'); await waitAnyKey(); clearScreen(); return; }
+            for (let i = 0; i <= 100; i += 25) {
+                clearScreen();
+                print(`找到多个缓存垃圾,正在清除... ${i}%`);
+                await sleep(700);
+            }
+            const freed = rand(5, 10);
+            print(`清理成功,清空${freed}GB空间`);
+            G.cun[G.xx] += freed;
+            if (rand(1, 3) === 1) {
+                print('缓存中的病毒复苏了,那是最可怕的,风险未知！！！！');
+                startVirus(2, 4, 8);
+                G.bingdu1 = true;
+            }
+            print('按任意键继续');
+            await waitAnyKey();
+            clearScreen();
+        }
+
+        async function reinstallSystem() {
+            clearScreen();
+            stopAllViruses();
+            G.cun = new Array(129).fill(0);
+            G.ruan = [];
+            G.yun = [];
+            G.bingdu = [];
+            G.weizhi = [];
+            G.ruanjian = 1;
+            G.guanjia = false;
+            G.qu = 0;
+            G.xx = 0;
+            G.chu = 0;
+            G.bingdu1 = false;
+            G.bingdu2 = false;
+            G.gameOver = false;
+            G.sheng = false;
+            print('系统已重置，开始重新安装...');
+            await sleep(1000);
+            await installSystem();
+            clearScreen();
+            print('初始化中...');
+            G.ruan = [];
+            G.yun = [];
+            G.bingdu = [];
+            G.weizhi = [];
+            G.ruanjian = 1;
+            G.guanjia = false;
+            G.bingdu1 = false;
+            G.bingdu2 = false;
+            stopAllViruses();
+            print('完成');
+            print('按任意键继续');
+            await waitAnyKey();
+            clearScreen();
+        }
+
+        // ---- 启动 ----
+        (async function init() {
+            G.cun = new Array(129).fill(0);
+            G.ruan = [];
+            G.yun = [];
+            G.bingdu = [];
+            G.weizhi = [];
+            G.ruanjian = 1;
+            G.guanjia = false;
+            G.qu = 0;
+            G.xx = 0;
+            G.chu = 0;
+            G.bingdu1 = false;
+            G.bingdu2 = false;
+            G.gameOver = false;
+            G.sheng = false;
+            G.virusIntervals = [];
+            G.virusRunning = [];
+            G.bgEnabled = false;
+            if (G.bgInterval) { clearInterval(G.bgInterval);
+                G.bgInterval = null; }
+
+            await startGame();
+            await installSystem();
+            await mainLoop();
+
+            stopAllViruses();
+            if (!G.sheng) print('游戏结束');
+        })().catch(err => {
+            print(`错误: ${err.message}`);
+            console.error(err);
+        });
+
+        output.addEventListener('click', () => { output.focus(); });
+        output.focus();
+    </script>
+</body>
+</html>
