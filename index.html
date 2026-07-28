@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>C盘危机</title>
     <style>
         * {
@@ -21,6 +21,9 @@
             padding: 8px 12px;
             display: flex;
             flex-direction: column;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            -webkit-user-select: none;
         }
         #output {
             flex: 1;
@@ -89,6 +92,10 @@
         // =====================================================================
         const output = document.getElementById('output');
 
+        // ---- 移动端检测 ----
+        const isMobile = /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent) ||
+                         ('ontouchstart' in window && window.innerWidth < 1024);
+
         // ---- 工具函数 ----
         function print(text) {
             const node = document.createTextNode(text + '\n');
@@ -116,7 +123,78 @@
         }
 
         // ---- 核心输入函数（完全在输出区域模拟终端输入） ----
-        function waitInput() {
+        function waitInput(options) {
+            // 移动端：有限选项可点击，自由文本用虚拟键盘
+            if (isMobile) {
+                if (options && Array.isArray(options)) {
+                    return waitChoice(options);
+                }
+                return new Promise((resolve) => {
+                    const wrapper = document.createElement('div');
+                    wrapper.style.cssText = 'margin:4px 0;';
+
+                    // 显示行：> 当前输入 + 光标
+                    const display = document.createElement('div');
+                    display.style.cssText = 'color:#0f0;font-family:inherit;font-size:15px;min-height:1.4em;margin-bottom:6px;word-break:break-all;';
+                    const cursor = document.createElement('span');
+                    cursor.className = 'cursor-blink';
+                    display.appendChild(document.createTextNode('> '));
+                    display.appendChild(cursor);
+                    wrapper.appendChild(display);
+
+                    let text = '';
+                    const updateDisplay = () => {
+                        display.innerHTML = '';
+                        display.appendChild(document.createTextNode('> ' + text));
+                        display.appendChild(cursor);
+                    };
+
+                    // 虚拟键盘
+                    const keys = [
+                        ['1','2','3','4','5','6','7','8','9','0','⌫'],
+                        ['q','w','e','r','t','y','u','i','o','p'],
+                        ['a','s','d','f','g','h','j','k','l'],
+                        ['✓','z','x','c','v','b','n','m','.','⌫']
+                    ];
+                    const kb = document.createElement('div');
+                    keys.forEach(row => {
+                        const r = document.createElement('div');
+                        r.style.cssText = 'display:flex;gap:2px;margin-bottom:2px;';
+                        row.forEach(k => {
+                            const btn = document.createElement('span');
+                            btn.textContent = k;
+                            btn.style.cssText = 'flex:1;text-align:center;padding:7px 0;background:#111;color:#0f0;border:1px solid #0f0;border-radius:2px;cursor:pointer;touch-action:manipulation;font-size:14px;user-select:none;-webkit-user-select:none;';
+                            if (k === '✓') btn.style.cssText += 'border-color:#0f0;background:#0a0a0a;font-weight:bold;';
+                            if (k === '⌫') btn.style.cssText += 'font-size:16px;';
+                            btn.onclick = (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (k === '✓') { submit(); return; }
+                                if (k === '⌫') { text = text.slice(0, -1); updateDisplay(); return; }
+                                text += k;
+                                updateDisplay();
+                            };
+                            r.appendChild(btn);
+                        });
+                        kb.appendChild(r);
+                    });
+                    wrapper.appendChild(kb);
+
+                    output.appendChild(wrapper);
+                    output.scrollTop = output.scrollHeight;
+
+                    let resolved = false;
+                    const submit = () => {
+                        if (resolved) return;
+                        resolved = true;
+                        const val = text;
+                        const txt = document.createTextNode(val + '\n');
+                        if (wrapper.parentNode) wrapper.replaceWith(txt);
+                        output.scrollTop = output.scrollHeight;
+                        resolve(val);
+                    };
+                });
+            }
             return new Promise((resolve) => {
                 const lineDiv = document.createElement('div');
                 lineDiv.className = 'input-line';
@@ -179,13 +257,44 @@
             return new Promise((resolve) => {
                 const handler = (e) => {
                     if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return;
+                    cleanup();
+                    resolve();
+                };
+                const cleanup = () => {
                     document.removeEventListener('keydown', handler);
                     document.removeEventListener('click', handler);
-                    resolve();
+                    document.removeEventListener('touchstart', handler);
                 };
                 document.addEventListener('keydown', handler);
                 document.addEventListener('click', handler);
+                document.addEventListener('touchstart', handler, { passive: true });
                 output.focus();
+            });
+        }
+
+        // 移动端：渲染可点击选项（无线选项直接点击=输入）
+        function waitChoice(choices) {
+            // 清理上一次的选项
+            const old = output.querySelectorAll('.choice-row');
+            old.forEach(el => el.remove());
+            return new Promise((resolve) => {
+                const div = document.createElement('div');
+                div.className = 'choice-row';
+                div.style.cssText = 'margin:4px 0;';
+                choices.forEach((c, i) => {
+                    const text = typeof c === 'object' ? String(c.text) : String(c);
+                    const value = typeof c === 'object' ? String(c.value) : String(c);
+                    const s = document.createElement('span');
+                    s.textContent = text;
+                    s.style.cssText = 'color:#0f0;text-decoration:underline;cursor:pointer;margin:0 6px;touch-action:manipulation;font-size:16px;';
+                    s.onclick = (e) => { e.preventDefault(); e.stopPropagation(); resolve(value); };
+                    div.appendChild(s);
+                    if (i < choices.length - 1) {
+                        div.appendChild(document.createTextNode(' | '));
+                    }
+                });
+                output.appendChild(div);
+                output.scrollTop = output.scrollHeight;
             });
         }
 
@@ -274,8 +383,40 @@
             output.scrollTop = output.scrollHeight;
 
             print('');
-            print('|1安装软件|2操作软件(获得奖励)|3卸载软件|4上网|5下载电脑管家|6使用电脑管家杀毒|7使用电脑管家深度清洁|');
-            print('|8重装系统|9把电脑砸了|10查看故事背景(首次游玩必看)|11刷新');
+            if (isMobile) {
+                // 移动端：数字可点击直接提交
+                const cmdLines = [
+                    '|1安装软件|2操作软件(获得奖励)|3卸载软件|4上网|5下载电脑管家|6使用电脑管家杀毒|7使用电脑管家深度清洁|',
+                    '|8重装系统|9把电脑砸了|10查看故事背景(首次游玩必看)|11刷新'
+                ];
+                cmdLines.forEach(line => {
+                    const div = document.createElement('div');
+                    const parts = line.split(/(\d+)/);
+                    parts.forEach(part => {
+                        if (/^\d+$/.test(part)) {
+                            const span = document.createElement('span');
+                            span.textContent = part;
+                            span.style.cssText = 'color:#0f0;text-decoration:underline;cursor:pointer;touch-action:manipulation;';
+                            span.onclick = (e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (window._cmdResolve) {
+                                    const r = window._cmdResolve;
+                                    window._cmdResolve = null;
+                                    r(parseInt(part));
+                                }
+                            };
+                            div.appendChild(span);
+                        } else {
+                            div.appendChild(document.createTextNode(part));
+                        }
+                    });
+                    output.appendChild(div);
+                });
+            } else {
+                print('|1安装软件|2操作软件(获得奖励)|3卸载软件|4上网|5下载电脑管家|6使用电脑管家杀毒|7使用电脑管家深度清洁|');
+                print('|8重装系统|9把电脑砸了|10查看故事背景(首次游玩必看)|11刷新');
+            }
             print('');
         }
 
@@ -369,7 +510,7 @@
             print('1极简安装|2沉浸式安装');
             let choice = 0;
             while (true) {
-                const input = await waitInput();
+                const input = await waitInput([1, 2]);
                 const num = parseInt(input);
                 if (num === 1 || num === 2) { choice = num; break; }
                 print('错误');
@@ -469,7 +610,7 @@
             await printSlow('2. English');
             print('');
             print('> 请输入数字选择语言 (1/2): ');
-            let lang = parseInt(await waitInput());
+            let lang = parseInt(await waitInput([1, 2]));
             if (lang === 1) await printSlow('已选择: 中文（简体）');
             else await printSlow('已选择: English');
             print('');
@@ -482,7 +623,7 @@
             await printSlow('2. 自定义：仅安装 Windows（全新安装）');
             print('');
             print('> 请输入数字选择 (1/2): ');
-            let instType = parseInt(await waitInput());
+            let instType = parseInt(await waitInput([1, 2]));
             if (instType === 2) await printSlow('已选择: 自定义安装');
             else await printSlow('已选择: 升级安装');
             await sleep(500);
@@ -586,8 +727,15 @@
                     break;
                 }
                 renderMainScreen();
-                const input = await waitInput();
-                const cmd = parseInt(input);
+                let cmd;
+                if (isMobile) {
+                    // 移动端：等待点击菜单数字
+                    cmd = await new Promise(resolve => { window._cmdResolve = resolve; });
+                    window._cmdResolve = null;
+                } else {
+                    const input = await waitInput();
+                    cmd = parseInt(input);
+                }
                 await handleCommand(cmd);
                 if (G.gameOver) break;
                 // 再次检查
@@ -607,16 +755,35 @@
             }
         }
 
+        // 移动端辅助：点击 yes/no
+        async function waitYesNo() {
+            if (!isMobile) return await waitInput();
+            return new Promise((resolve) => {
+                const div = document.createElement('div');
+                div.style.cssText = 'margin:4px 0;';
+                ['yes', 'no'].forEach(w => {
+                    const s = document.createElement('span');
+                    s.textContent = w;
+                    s.style.cssText = 'color:#0f0;text-decoration:underline;cursor:pointer;margin:0 8px;touch-action:manipulation;font-size:18px;';
+                    s.onclick = (e) => { e.preventDefault();
+                        e.stopPropagation(); resolve(w); };
+                    div.appendChild(s);
+                });
+                output.appendChild(div);
+                output.scrollTop = output.scrollHeight;
+            });
+        }
+
         // ---- 胜利结局 ----
         async function victoryEnding() {
             clearScreen();
             print('干得好!这位来自神秘组织的神秘人员,老大我亲自来到你这里别忘了目的');
             print('=====是否把重要文件交给老大(yes/no)====');
-            const answer1 = await waitInput();
+            const answer1 = await waitYesNo();
             if (answer1 === 'yes') {
                 await printSlow('不愧是我的神秘人员,我赐予你整整100000亿元!!!!!!收下吧');
                 print('====要不要谢谢老大(yes/no)====');
-                const answer2 = await waitInput();
+                const answer2 = await waitYesNo();
                 if (answer2 === 'yes') {
                     await printSlow('好样的,有礼貌,我们后会有期');
                 } else if (answer2 === 'no') {
@@ -712,7 +879,9 @@
             }
             print('');
             while (true) {
-                const ta = parseInt(await waitInput());
+                const chs = [];
+                for (let i = 1; i <= G.qu; i++) chs.push(i);
+                const ta = parseInt(await waitInput(chs));
                 if (ta > G.qu || ta < 1) { print('不存在此磁盘!'); continue; }
                 if (G.cun[ta] < need) { print('磁盘空间不足！'); continue; }
                 print('安装中...');
@@ -740,11 +909,13 @@
             for (let i = 1; i < G.ruanjian; i++) print(` [ ${i} ] ${G.ruan[i]}`);
             let idx = 0, exit = false;
             while (true) {
-                const val = await waitInput();
-                const num = parseInt(val);
+                const chs = [];
+                for (let i = 1; i < G.ruanjian; i++) chs.push(i);
+                chs.push({text: '返回', value: '6666'});
+                const val = await waitInput(chs);
                 if (val === '6666') { exit = true; break; }
-                if (num >= G.ruanjian || num < 1) print('软件不存在');
-                else { idx = num; break; }
+                idx = parseInt(val);
+                break;
             }
             if (exit) { clearScreen(); return; }
             const r = rand(1, 2);
@@ -779,11 +950,13 @@
             print('你要卸载哪个软件:  |6666返回');
             let idx = 0, exit = false;
             while (true) {
-                const val = await waitInput();
-                const num = parseInt(val);
+                const chs = [];
+                for (let i = 1; i < G.ruanjian; i++) chs.push(i);
+                chs.push({text: '返回', value: '6666'});
+                const val = await waitInput(chs);
                 if (val === '6666') { exit = true; break; }
-                if (num >= G.ruanjian || num < 1) print('软件不存在!');
-                else { idx = num; break; }
+                idx = parseInt(val);
+                break;
             }
             if (exit) { clearScreen(); return; }
             if (G.bingdu[idx]) { print('病毒软件无法卸载'); print('按任意键继续'); await waitAnyKey(); clearScreen(); return; }
@@ -791,7 +964,7 @@
                 print('此软件正在运行，是否终止|1yes|2no|');
                 let yn = 0;
                 while (true) {
-                    const v = parseInt(await waitInput());
+                    const v = parseInt(await waitInput([1, 2]));
                     if (v === 1 || v === 2) { yn = v; break; }
                     print('错误');
                 }
@@ -865,7 +1038,7 @@
             print('是否下载|1yes|2no');
             let t = 0;
             while (true) {
-                const v = parseInt(await waitInput());
+                const v = parseInt(await waitInput([1, 2]));
                 if (v === 1 || v === 2) { t = v; break; }
                 print('错误');
             }
